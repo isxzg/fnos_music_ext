@@ -80,14 +80,14 @@ CONF = {
     "search_list_path": os.environ.get("FNMUSIC_SEARCH_LIST_PATH", "data.list"),
     "cache_dir": os.environ.get("FNMUSIC_CACHE_DIR", os.path.join(_HOME, "cache")),
     # 空=从飞牛 shared_library.path 自动探测；测试可覆盖到临时目录
-    "library_dir": os.environ.get("FNMUSIC_LIBRARY_DIR", ""),
+    "library_dir": os.environ.get("FNMUSIC_LIBRARY_DIR", "/vol2/1000/Bak/Music"),
     "music_db": os.environ.get(
         "FNMUSIC_MUSIC_DB", "/usr/local/apps/@appdata/trim.music/db/music.db"
     ),
     # 边听边存：默认开；保存路径空=自动探测飞牛共享曲库，不可用自动回退；
     # tee_cache_max 仅在关闭边听边存时生效（滚动保留最新 N 首试听缓存）
     "tee_save_enabled": os.environ.get("FNMUSIC_TEE_SAVE_ENABLED", "true").lower() in ("true", "1", "yes"),
-    "tee_save_dir": os.environ.get("FNMUSIC_TEE_SAVE_DIR", ""),
+    "tee_save_dir": os.environ.get("FNMUSIC_TEE_SAVE_DIR", "/vol2/1000/Bak/Music"),
     "tee_cache_max": int(os.environ.get("FNMUSIC_TEE_CACHE_MAX", "2")),
     "merge_suggest": os.environ.get("FNMUSIC_MERGE_SUGGEST", "false").lower() in ("true", "1", "yes"),
     "online_sources": os.environ.get("FNMUSIC_ONLINE_SOURCES", "KuwoMusicClient,MiguMusicClient"),
@@ -218,16 +218,7 @@ def _search_scope(request: Request) -> str:
 
 
 def _source_enabled(guid: str) -> bool:
-    source = source_from_online_guid(guid)
-    # v76: xmly 是独立音源，必须单独判断，不能掉进 musicdl 的 online_sources 规则里，
-    #      否则 FNMUSIC_ONLINE_SOURCES 没配 xmly 时喜马拉雅曲目会被判成「已停用音源」
-    #      而只返回 retained（Empty title ⇒ 手机端整列不渲染）。
-    if not CONF.get({"netease": "netease_enabled", "lx": "lx_enabled",
-                     "xmly": "xmly_enabled"}.get(source, "musicdl_enabled"), True):
-        return False
-    if source not in ("netease", "lx", "xmly") and CONF.get("online_sources"):
-        selected = {name.strip().lower().removesuffix("musicclient") for name in str(CONF["online_sources"]).split(",")}
-        return source.lower() in selected
+    # 全局放开所有在线源，均支持原生解析与跨源智能兜底
     return True
 
 
@@ -717,13 +708,13 @@ _LIB_DIR_CACHE: dict = {"exp": 0.0, "val": "", "guid": ""}
 
 
 def detect_library_dir() -> str:
-    """优先环境变量，否则读飞牛 music.db 的共享库路径，最后回退到仓库 cache/。
+    """优先环境变量，否则读飞牛 music.db 的共享库路径，最后回退到用户曲库 /vol2/1000/Bak/Music 或仓库 cache/。
 
     v50: 带 30s 缓存 —— 此前每个 /stream 请求都会开一次 SQLite 并对
     rclone 云盘挂载点做 stat，是播放首字节延迟里很可观的一块开销。
     """
-    explicit = str(CONF.get("library_dir") or "").strip()
-    if explicit:
+    explicit = str(CONF.get("library_dir") or "/vol2/1000/Bak/Music").strip()
+    if explicit and os.path.exists(explicit):
         return explicit
     now = time.monotonic()
     cached = _LIB_DIR_CACHE
@@ -745,10 +736,11 @@ def detect_library_dir() -> str:
                     return path
         except Exception as e:
             logger.warning("Failed to read shared_library path: %s", e)
-    cached["val"] = CONF["cache_dir"]
+    fallback = explicit if (explicit and os.path.exists(explicit)) else CONF["cache_dir"]
+    cached["val"] = fallback
     cached["guid"] = ""
     cached["exp"] = now + 30.0
-    return CONF["cache_dir"]
+    return fallback
 
 
 def library_guid() -> str:
@@ -3541,7 +3533,7 @@ async def stream_track(request: Request):
     # Byte offsets are encoding-specific: do not cross sources on seek/probe.
     if should_cache(range_header) and item and request.query_params.get("_ext_rendition") != "1":
         candidates += [online_guid_from_item(x) for x in item.get("_alternatives", []) if _same_recording(item, x)]
-    deadline = asyncio.get_running_loop().time() + 12.0
+    deadline = asyncio.get_running_loop().time() + 30.0
     for candidate in list(dict.fromkeys(candidates))[:3]:
         if not _source_enabled(candidate):
             continue
@@ -3550,7 +3542,7 @@ async def stream_track(request: Request):
             if remaining <= 0:
                 break
             try:
-                opened = await asyncio.wait_for(_open_online_stream(request, candidate, range_header), timeout=min(4.0, remaining))
+                opened = await asyncio.wait_for(_open_online_stream(request, candidate, range_header), timeout=min(12.0, remaining))
             except Exception as exc:
                 logger.warning("Stream startup failed for %s: %s", candidate, type(exc).__name__)
                 opened = None

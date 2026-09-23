@@ -453,7 +453,7 @@ if [ "${NON_INTERACTIVE}" -eq 0 ]; then
     esac
 else
     MODE="${MODE:-docker}"
-    SOURCES_RAW="${SOURCES_RAW:-musicdl}"
+    SOURCES_RAW="${SOURCES_RAW:-musicbox,musicdl,lxmusic}"
     if [ "${ENABLE_RECOMMEND}" = "yes" ]; then
         if [ -z "${LLM_BASE_URL}" ] || [ -z "${LLM_API_KEY}" ]; then
             log_err "--enable-recommend 需要同时提供 --llm-base-url 与 --llm-api-key"
